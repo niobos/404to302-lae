@@ -1,0 +1,16 @@
+{
+  "name": "404to302",
+  "dependencies": {},
+  "dependenciesCOMMENT": {
+    "aws-sdk": "already installed on λ@E. Also, this boost our size up beyond the allowed 1MB."
+  },
+  "devDependencies": {
+    "aws-sdk": "^2.528.0",
+    "mocha": "^6.2.0",
+    "rewire": "^4.0.0",
+    "sinon": "^7.4.2"
+  },
+  "scripts": {
+    "test": "node_modules/.bin/mocha"
+  }
+}

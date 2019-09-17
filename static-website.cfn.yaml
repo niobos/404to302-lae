@@ -1,0 +1,186 @@
+# Set up a static site, optionally with 404to302 lambda.
+
+# ISSUE: Origin Access Identity is not possible in combination with Website Hosting
+#        in particular: having https://domain/ fetch the index.html is not possible with OAI
+# ISSUE: when a bucket is freshly created, it redirects 307 to the regional endpoint, causing
+#        confusion in CloudFront. Waiting solves this...
+# TODO: transition logs to cheaper storage?
+#       transition itself costs, and cheaper storage has minimum size & retention
+Parameters:
+  DomainName:
+    Description: Main domain name
+    Type: String
+    Default: www.example.org
+  Aliases:
+    Description: Comma separated list of alternative domain names
+    Type: CommaDelimitedList
+  BucketName:
+    Description: (optional) Bucket name
+    Type: String
+  LogRetention:
+    Description: Number of days to keep logs
+    Type: Number
+    Default: 400
+  IndexDocument:
+    Type: String
+    Default: index.html
+  AcmArn:
+    Type: String
+    AllowedPattern: arn:aws:acm:us-east-1:[0-9]+:certificate/[0-9a-fA-F-]+
+  Lae404to302:
+    Type: String
+    Description: (optional) ARN of the 404to302 Lambda@Edge if this behaviour is wanted
+  Lae404to302Location:
+    Type: String
+    Description: Fallback location for 404to302.
+  TTL:
+    Type: Number
+    Description: Default TTL in seconds
+    Default: 3600
+
+Conditions:
+  CreateAcm:
+    Fn::Equals:
+      - !Ref AcmArn
+      - ""
+  AliasesGiven:
+    Fn::Not:
+      - Fn::Equals:
+          - !Join [ ",", !Ref Aliases ]
+          - ""
+  BucketNameGiven:
+    Fn::Not:
+      - Fn::Equals:
+          - !Ref BucketName
+          - ""
+  Lae404to302Set:
+    Fn::Not:
+      - Fn::Equals:
+          - !Ref Lae404to302
+          - ""
+
+Resources:
+#  OriginAccessIdentity:
+#    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+#    Properties:
+#      CloudFrontOriginAccessIdentityConfig:
+#        Comment: !Sub OAI for ${AWS::StackName}
+  ContentS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName:
+        Fn::If:
+          - BucketNameGiven
+          - !Ref BucketName
+          - !Ref AWS::NoValue
+      WebsiteConfiguration:
+        IndexDocument: !Ref IndexDocument
+  ContentS3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ContentS3Bucket
+      PolicyDocument:
+#        Fn::Sub: |
+#          {
+#            "Version": "2012-10-17",
+#            "Statement": [
+#              {
+#                "Sid": "Allow access via CloudFront by verifying OriginAccessIdentity",
+#                "Effect": "Allow",
+#                "Principal": {"CanonicalUser": "${OriginAccessIdentity.S3CanonicalUserId}"},
+#                "Action": "s3:GetObject",
+#                "Resource": "arn:aws:s3:::${ContentS3Bucket}/*"
+#              }
+#            ]
+#          }
+        Fn::Sub: |
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Sid": "PublicReadForGetBucketObjects",
+                "Effect": "Allow",
+                "Principal": "*",
+                "Action": "s3:GetObject",
+                "Resource": "arn:aws:s3:::${ContentS3Bucket}/*"
+              }
+            ]
+          }
+  LoggingS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName:
+        Fn::If:
+          - BucketNameGiven
+          - !Join ["", [!Ref BucketName, "-access-logs"]]
+          - !Ref AWS::NoValue
+      LifecycleConfiguration:
+        Rules:
+#          - Status: Enabled
+#            Transitions:
+#              - TransitionInDays:
+#                StorageClass:
+          - Status: Enabled
+            ExpirationInDays: !Ref LogRetention
+  Cert:
+    Condition: CreateAcm
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref DomainName
+      ValidationMethod: DNS
+  CloudFront:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Aliases:
+          Fn::If:
+            - AliasesGiven
+            - !Split [",", !Join [ ",", [!Ref DomainName, !Join [",", !Ref Aliases]]]]
+            - [!Ref DomainName]
+        Enabled: true
+        HttpVersion: http2
+        IPV6Enabled: true
+        Logging:
+          Bucket: !Sub ${LoggingS3Bucket}.s3.amazonaws.com
+        PriceClass: PriceClass_100
+        ViewerCertificate:
+          MinimumProtocolVersion: TLSv1.1_2016
+          SslSupportMethod: sni-only
+          AcmCertificateArn:
+            Fn::If:
+              - CreateAcm
+              - !Ref Cert
+              - !Ref AcmArn
+        DefaultCacheBehavior:
+          Compress: true
+          TargetOriginId: S3
+          ViewerProtocolPolicy: redirect-to-https
+          ForwardedValues:
+            QueryString: false
+          DefaultTTL: !Ref TTL
+          LambdaFunctionAssociations:
+            - Fn::If:
+                - Lae404to302Set
+                - EventType: origin-response
+                  LambdaFunctionARN: !Ref Lae404to302
+                - !Ref AWS::NoValue
+        Origins:
+#          - Id: S3
+#            DomainName: !Sub ${ContentS3Bucket}.s3.amazonaws.com
+#            S3OriginConfig:
+#              OriginAccessIdentity: !Sub origin-access-identity/cloudfront/${OriginAccessIdentity}
+          - Id: S3
+            DomainName: !Select [2, !Split ["/", !GetAtt ContentS3Bucket.WebsiteURL]]
+            CustomOriginConfig:
+              # HTTPS not supported on Website endpoint
+              OriginProtocolPolicy: http-only
+      Tags:
+        - Fn::If:
+            - Lae404to302Set
+            - Key: FallbackLocation
+              Value: !Ref Lae404to302Location
+            - !Ref AWS::NoValue
+
+Outputs:
+  CloudFrontDomainName:
+    Value: !GetAtt CloudFront.DomainName

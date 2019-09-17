@@ -1,0 +1,71 @@
+# This needs to be deployed in us-east-1
+Parameters:
+  S3Bucket:
+    Description: S3 bucket where the Lambda@edge code is located
+    Type: String
+  S3Key:
+    Description: Key within the S3 bucket where the Lambda@edge code is located
+    Type: String
+    Default: 404to302.zip
+
+Resources:
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument: |
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": [
+                  "lambda.amazonaws.com",
+                  "edgelambda.amazonaws.com"
+                ]
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        }
+      Policies:
+        - PolicyName: Lambda404to302
+          PolicyDocument:
+            Fn::Sub: |
+              {
+                "Version": "2012-10-17",
+                "Statement": [
+                  {
+                    "Effect": "Allow",
+                    "Action": [
+                      "logs:CreateLogGroup",
+                      "logs:CreateLogStream",
+                      "logs:PutLogEvents"
+                    ],
+                    "Resource": "*"
+                  },
+                  {
+                    "Effect": "Allow",
+                    "Action": [
+                      "cloudfront:ListTagsForResource"
+                    ],
+                    "Resource": "*"
+                  }
+                ]
+              }
+  Lambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: nodejs8.10
+      Code:
+        S3Bucket: !Ref S3Bucket
+        S3Key: !Ref S3Key
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+  LambdaVersion:
+    Type: AWS::Lambda::Version
+    Properties:
+      FunctionName: !Ref Lambda
+Outputs:
+  LambdaVersionArn:
+    Value: !Ref LambdaVersion
