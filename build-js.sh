@@ -115,6 +115,14 @@ fi
 cp -a "${SRC_DIR}/" "${BUILD_DIR}"
 cp package.json "${BUILD_DIR}/."
 
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  (
+    echo "HEAD is at $(git rev-parse HEAD)"
+    echo "Status:"
+    git status --porcelain
+  ) > "${BUILD_DIR}/build.log"
+fi
+
 (
     cd "${BUILD_DIR}"
     npm install --production
@@ -131,6 +139,7 @@ cp package.json "${BUILD_DIR}/."
     if [ -n "${HASH_FILE+set}" ]; then
         git init -q
         git add --all
+        git rm --cached "build.log"
         git commit --no-gpg-sign -qm 'whatever'
         HASH=`git cat-file -p HEAD | grep '^tree' | awk '{print $2}'`
         rm -rf .git
