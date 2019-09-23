@@ -6,7 +6,7 @@ Parameters:
   S3Key:
     Description: Key within the S3 bucket where the Lambda@edge code is located
     Type: String
-    Default: 404to302.zip
+    Default: build.zip
 
 Resources:
   LambdaRole:
