@@ -18,9 +18,9 @@
 const AWS = require('aws-sdk');
 
 /* Lambda@Edge has a 30 seconds timeout on Origin Response
- * Make sure we finish before that. Arbitrarily set to 15 seconds (which should be plenty)
+ * Allow us to time out so we can see this in the Lambda metrics
  */
-const timeout_ms = 15000;
+const timeout_ms = 45000;
 
 function asyncCloudFrontGetTagsForResource(param, service_param = {}) {
     // Async wrapper around the CloudFront GetTagsForResource call
