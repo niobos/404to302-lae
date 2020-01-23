@@ -1,0 +1,176 @@
+# Set up a static redirect
+
+# ISSUE: Origin Access Identity is not possible in combination with Website Hosting
+#        in particular: having https://domain/ fetch the index.html is not possible with OAI
+# ISSUE: when a bucket is freshly created, it redirects 307 to the regional endpoint, causing
+#        confusion in CloudFront. Waiting solves this...
+Parameters:
+  DomainName:
+    Description: Main domain name
+    Type: String
+    Default: www.example.org
+  Aliases:
+    Description: Comma separated list of alternative domain names
+    Type: CommaDelimitedList
+  BucketName:
+    Description: (optional) Bucket name
+    Type: String
+  RedirectCode:
+    Type: String
+    Default: 302
+    AllowedValues: ["301", "302"]
+  RedirectLocation:
+    Type: String
+    Description: Without path
+    Default: https://example.org
+    AllowedPattern: "https?://[^/]+"
+  RedirectPathPrefix:
+    Type: String
+    Description: Prefix the original path with this (leading slash automatically added)
+    Default: ""
+    AllowedPattern: "([^/].*)?"
+  RedirectAppendPath:
+    Type: String
+    Description: Append the original path
+    Default: "no"
+    AllowedValues: ["yes", "no"]
+  AcmArn:
+    Type: String
+    AllowedPattern: (arn:aws:acm:us-east-1:[0-9]+:certificate/[0-9a-fA-F-]+)?
+  TTL:
+    Type: Number
+    Description: Default TTL in seconds
+    Default: 3600
+
+Conditions:
+  CreateAcm:
+    Fn::Equals:
+      - !Ref AcmArn
+      - ""
+  AliasesGiven:
+    Fn::Not:
+      - Fn::Equals:
+          - !Join [ ",", !Ref Aliases ]
+          - ""
+  BucketNameGiven:
+    Fn::Not:
+      - Fn::Equals:
+          - !Ref BucketName
+          - ""
+  AppendPath:
+    Fn::Equals:
+      - !Ref RedirectAppendPath
+      - "yes"
+
+Resources:
+  #  OriginAccessIdentity:
+  #    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+  #    Properties:
+  #      CloudFrontOriginAccessIdentityConfig:
+  #        Comment: !Sub OAI for ${AWS::StackName}
+  RedirectS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName:
+        Fn::If:
+          - BucketNameGiven
+          - !Ref BucketName
+          - !Ref AWS::NoValue
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        RoutingRules:
+          - RoutingRuleCondition:
+              KeyPrefixEquals: ""
+            RedirectRule:
+              HttpRedirectCode: !Ref RedirectCode
+              Protocol: !Select [0, !Split ["://", !Ref RedirectLocation]]
+              HostName: !Select [1, !Split ["://", !Ref RedirectLocation]]
+              ReplaceKeyPrefixWith:
+                Fn::If:
+                  - AppendPath
+                  - !Ref RedirectPathPrefix
+                  - !Ref AWS::NoValue
+              ReplaceKeyWith:
+                Fn::If:
+                  - AppendPath
+                  - !Ref AWS::NoValue
+                  - !Ref RedirectPathPrefix
+  RedirectS3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref RedirectS3Bucket
+      PolicyDocument:
+        #        Fn::Sub: |
+        #          {
+        #            "Version": "2012-10-17",
+        #            "Statement": [
+        #              {
+        #                "Sid": "Allow access via CloudFront by verifying OriginAccessIdentity",
+        #                "Effect": "Allow",
+        #                "Principal": {"CanonicalUser": "${OriginAccessIdentity.S3CanonicalUserId}"},
+        #                "Action": "s3:GetObject",
+        #                "Resource": "arn:aws:s3:::${RedirectS3Bucket}/*"
+        #              }
+        #            ]
+        #          }
+        Fn::Sub: |
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Sid": "PublicReadForGetBucketObjects",
+                "Effect": "Allow",
+                "Principal": "*",
+                "Action": "s3:GetObject",
+                "Resource": "arn:aws:s3:::${RedirectS3Bucket}/*"
+              }
+            ]
+          }
+  Cert:
+    Condition: CreateAcm
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref DomainName
+      ValidationMethod: DNS
+  CloudFront:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Aliases:
+          Fn::If:
+            - AliasesGiven
+            - !Split [",", !Join [ ",", [!Ref DomainName, !Join [",", !Ref Aliases]]]]
+            - [!Ref DomainName]
+        Enabled: true
+        HttpVersion: http2
+        IPV6Enabled: true
+        PriceClass: PriceClass_100
+        ViewerCertificate:
+          MinimumProtocolVersion: TLSv1.1_2016
+          SslSupportMethod: sni-only
+          AcmCertificateArn:
+            Fn::If:
+              - CreateAcm
+              - !Ref Cert
+              - !Ref AcmArn
+        DefaultCacheBehavior:
+          Compress: true
+          TargetOriginId: S3
+          ViewerProtocolPolicy: allow-all
+          ForwardedValues:
+            QueryString: false
+          DefaultTTL: !Ref TTL
+        Origins:
+          #          - Id: S3
+          #            DomainName: !Sub ${RedirectS3Bucket}.s3.amazonaws.com
+          #            S3OriginConfig:
+          #              OriginAccessIdentity: !Sub origin-access-identity/cloudfront/${OriginAccessIdentity}
+          - Id: S3
+            DomainName: !Select [2, !Split ["/", !GetAtt RedirectS3Bucket.WebsiteURL]]
+            CustomOriginConfig:
+              # HTTPS not supported on Website endpoint
+              OriginProtocolPolicy: http-only
+
+Outputs:
+  CloudFrontDomainName:
+    Value: !GetAtt CloudFront.DomainName
